@@ -38,6 +38,7 @@
 
 @synthesize sizeInPixels = _sizeInPixels;
 @synthesize fillMode = _fillMode;
+@synthesize enabled;
 
 #pragma mark -
 #pragma mark Initialization and teardown
@@ -79,6 +80,8 @@
         self.contentScaleFactor = [[UIScreen mainScreen] scale];
     }
 
+    self.enabled = YES;
+    
     inputRotation = kGPUImageNoRotation;
     
     [self setBackgroundColorRed:0.0 green:0.0 blue:0.0 alpha:1.0];
@@ -119,7 +122,7 @@
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context
 {
-    if (object == self && [keyPath isEqualToString:@"frame"])
+    if (object == self && [keyPath isEqualToString:@"frame"] && (!CGSizeEqualToSize(self.bounds.size, CGSizeZero)))
     {
         [self destroyDisplayFramebuffer];
         [self createDisplayFramebuffer];
@@ -137,7 +140,9 @@
 #pragma mark Managing the display FBOs
 
 - (void)createDisplayFramebuffer;
-{
+{    
+    [GPUImageOpenGLESContext useImageProcessingContext];
+    
 	glGenFramebuffers(1, &displayFramebuffer);
 	glBindFramebuffer(GL_FRAMEBUFFER, displayFramebuffer);
 	
@@ -150,15 +155,22 @@
 
 	glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &backingWidth);
 	glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &backingHeight);
+    
+    if ( (backingWidth == 0) || (backingHeight == 0) )
+    {
+        [self destroyDisplayFramebuffer];
+        return;
+    }
+    
     _sizeInPixels.width = (CGFloat)backingWidth;
     _sizeInPixels.height = (CGFloat)backingHeight;
-    
+
 //	NSLog(@"Backing width: %d, height: %d", backingWidth, backingHeight);
 
 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, displayRenderbuffer);
 	
     GLuint framebufferCreationStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    NSAssert(framebufferCreationStatus == GL_FRAMEBUFFER_COMPLETE, @"Failure with display framebuffer generation");
+    NSAssert(framebufferCreationStatus == GL_FRAMEBUFFER_COMPLETE, @"Failure with display framebuffer generation for display of size: %f, %f", self.bounds.size.width, self.bounds.size.height);
 }
 
 - (void)destroyDisplayFramebuffer;
@@ -306,6 +318,13 @@
         0.0f, 1.0f,
     };
     
+    static const GLfloat rotate180TextureCoordinates[] = {
+        1.0f, 0.0f,
+        0.0f, 0.0f,
+        1.0f, 1.0f,
+        0.0f, 1.0f,
+    };
+    
     switch(rotationMode)
     {
         case kGPUImageNoRotation: return noRotationTextureCoordinates;
@@ -314,13 +333,14 @@
         case kGPUImageFlipVertical: return verticalFlipTextureCoordinates;
         case kGPUImageFlipHorizonal: return horizontalFlipTextureCoordinates;
         case kGPUImageRotateRightFlipVertical: return rotateRightVerticalFlipTextureCoordinates;
+        case kGPUImageRotate180: return rotate180TextureCoordinates;
     }
 }
 
 #pragma mark -
 #pragma mark GPUInput protocol
 
-- (void)newFrameReadyAtTime:(CMTime)frameTime;
+- (void)newFrameReadyAtTime:(CMTime)frameTime atIndex:(NSInteger)textureIndex;
 {
     [GPUImageOpenGLESContext useImageProcessingContext];
     [self setDisplayFramebuffer];
@@ -332,7 +352,7 @@
     
 	glActiveTexture(GL_TEXTURE4);
 	glBindTexture(GL_TEXTURE_2D, inputTextureForDisplay);
-	glUniform1i(displayInputTextureUniform, 4);	
+	glUniform1i(displayInputTextureUniform, 4);
     
     glVertexAttribPointer(displayPositionAttribute, 2, GL_FLOAT, 0, 0, imageVertices);
 	glVertexAttribPointer(displayTextureCoordinateAttribute, 2, GL_FLOAT, 0, 0, [GPUImageView textureCoordinatesForRotation:inputRotation]);

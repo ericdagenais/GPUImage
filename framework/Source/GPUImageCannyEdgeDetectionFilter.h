@@ -1,16 +1,31 @@
 #import "GPUImageFilterGroup.h"
 
-@class GPUImageGaussianBlurFilter;
-@class GPUImageThresholdEdgeDetection;
-@class GPUImageSketchFilter;
+@class GPUImageGrayscaleFilter;
+@class GPUImageSingleComponentFastBlurFilter;
+@class GPUimageDirectionalSobelEdgeDetectionFilter;
+@class GPUImageDirectionalNonMaximumSuppressionFilter;
+@class GPUImageWeakPixelInclusionFilter;
 
-/** This uses a Gaussian blur before applying a Sobel operator to highlight edges
+/** This applies the edge detection process described by John Canny in 
+ 
+ Canny, J., A Computational Approach To Edge Detection, IEEE Trans. Pattern Analysis and Machine Intelligence, 8(6):679–698, 1986.
+ 
+ and implemented in OpenGL ES by 
+
+ A. Ensor, S. Hall. GPU-based Image Analysis on Mobile Devices. Proceedings of Image and Vision Computing New Zealand 2011.
+
+ It starts with a conversion to luminance, followed by an accelerated 9-hit Gaussian blur. A Sobel operator is applied to obtain the overall
+ gradient strength in the blurred image, as well as the direction (in texture sampling steps) of the gradient. A non-maximum suppression filter
+ acts along the direction of the gradient, highlighting strong edges that pass the threshold and completely removing those that fail the lower 
+ threshold. Finally, pixels from in-between these thresholds are either included in edges or rejected based on neighboring pixels.
  */
 @interface GPUImageCannyEdgeDetectionFilter : GPUImageFilterGroup
 {
-    GPUImageGaussianBlurFilter *blurFilter;
-    GPUImageThresholdEdgeDetection *edgeDetectionFilter;
-//    GPUImageSketchFilter *edgeDetectionFilter;
+    GPUImageGrayscaleFilter *luminanceFilter;
+    GPUImageSingleComponentFastBlurFilter *blurFilter;
+    GPUimageDirectionalSobelEdgeDetectionFilter *edgeDetectionFilter;
+    GPUImageDirectionalNonMaximumSuppressionFilter *nonMaximumSuppressionFilter;
+    GPUImageWeakPixelInclusionFilter *weakPixelInclusionFilter;
 }
 
 /** The image width and height factors tweak the appearance of the edges.
@@ -32,8 +47,12 @@
  */
 @property (readwrite, nonatomic) CGFloat blurSize;
 
-/** Any edge above this threshold will be black, and anything below white. Ranges from 0.0 to 1.0, with 0.5 as the default
+/** Any edge with a gradient magnitude above this threshold will pass and show up in the final result.
  */
-@property(readwrite, nonatomic) CGFloat threshold; 
+@property(readwrite, nonatomic) CGFloat upperThreshold; 
+
+/** Any edge with a gradient magnitude below this threshold will fail and be removed from the final result.
+ */
+@property(readwrite, nonatomic) CGFloat lowerThreshold; 
 
 @end

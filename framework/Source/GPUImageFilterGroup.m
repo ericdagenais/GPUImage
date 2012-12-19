@@ -1,5 +1,4 @@
 #import "GPUImageFilterGroup.h"
-#import "GPUImageFilter.h"
 #import "GPUImagePicture.h"
 
 @implementation GPUImageFilterGroup
@@ -35,6 +34,11 @@
     return [filters objectAtIndex:filterIndex];
 }
 
+- (int)filterCount;
+{
+    return [filters count];
+}
+
 #pragma mark -
 #pragma mark Still image processing
 
@@ -43,14 +47,32 @@
     return [self.terminalFilter imageFromCurrentlyProcessedOutputWithOrientation:imageOrientation];
 }
 
+- (CGImageRef)newCGImageFromCurrentlyProcessedOutputWithOrientation:(UIImageOrientation)imageOrientation;
+{
+    return [self.terminalFilter newCGImageFromCurrentlyProcessedOutputWithOrientation:imageOrientation];
+}
+
 - (UIImage *)imageByFilteringImage:(UIImage *)imageToFilter;
 {
-    GPUImagePicture *stillImageSource = [[GPUImagePicture alloc] initWithImage:imageToFilter];
+    CGImageRef image = [self newCGImageByFilteringCGImage:[imageToFilter CGImage]];
+    UIImage *processedImage = [UIImage imageWithCGImage:image];
+    CGImageRelease(image);
+    return processedImage;
+}
+
+- (CGImageRef)newCGImageByFilteringImage:(UIImage *)imageToFilter;
+{
+    return [self newCGImageByFilteringCGImage:[imageToFilter CGImage]];
+}
+
+- (CGImageRef)newCGImageByFilteringCGImage:(CGImageRef)imageToFilter;
+{
+    GPUImagePicture *stillImageSource = [[GPUImagePicture alloc] initWithCGImage:imageToFilter];
     
     [stillImageSource addTarget:self];
     [stillImageSource processImage];
     
-    UIImage *processedImage = [self.terminalFilter imageFromCurrentlyProcessedOutput];
+    CGImageRef processedImage = [self.terminalFilter newCGImageFromCurrentlyProcessedOutput];
     
     [stillImageSource removeTarget:self];
     return processedImage;
@@ -87,13 +109,13 @@
 #pragma mark -
 #pragma mark GPUImageInput protocol
 
-- (void)newFrameReadyAtTime:(CMTime)frameTime;
+- (void)newFrameReadyAtTime:(CMTime)frameTime atIndex:(NSInteger)textureIndex;
 {
     for (GPUImageOutput<GPUImageInput> *currentFilter in _initialFilters)
     {
         if (currentFilter != self.inputFilterToIgnoreForUpdates)
         {
-            [currentFilter newFrameReadyAtTime:frameTime];
+            [currentFilter newFrameReadyAtTime:frameTime atIndex:textureIndex];
         }
     }
 }
@@ -108,10 +130,10 @@
 
 - (NSInteger)nextAvailableTextureIndex;
 {
-    if ([_initialFilters count] > 0)
-    {
-        return [[_initialFilters objectAtIndex:0] nextAvailableTextureIndex];
-    }
+//    if ([_initialFilters count] > 0)
+//    {
+//        return [[_initialFilters objectAtIndex:0] nextAvailableTextureIndex];
+//    }
     
     return 0;
 }

@@ -15,21 +15,34 @@
     return self;
 }
 
+- (id)initWithCGImage:(CGImageRef)newImageSource;
+{
+    if (!(self = [self initWithCGImage:newImageSource smoothlyScaleOutput:NO]))
+    {
+		return nil;
+    }
+    return self;
+}
+
 - (id)initWithImage:(UIImage *)newImageSource smoothlyScaleOutput:(BOOL)smoothlyScaleOutput;
+{
+    return [self initWithCGImage:[newImageSource CGImage] smoothlyScaleOutput:smoothlyScaleOutput];
+}
+
+- (id)initWithCGImage:(CGImageRef)newImageSource smoothlyScaleOutput:(BOOL)smoothlyScaleOutput;
 {
     if (!(self = [super init]))
     {
 		return nil;
     }
-
     self.shouldSmoothlyScaleOutput = smoothlyScaleOutput;
-    imageSource = newImageSource;
 
     [GPUImageOpenGLESContext useImageProcessingContext];
-
-    CGSize pointSizeOfImage = [imageSource size];
-    CGFloat scaleOfImage = [imageSource scale];
-    CGSize pixelSizeOfImage = CGSizeMake(scaleOfImage * pointSizeOfImage.width, scaleOfImage * pointSizeOfImage.height);
+    
+    CGFloat widthOfImage = CGImageGetWidth(newImageSource);
+    CGFloat heightOfImage = CGImageGetHeight(newImageSource);
+    pixelSizeOfImage = CGSizeMake(widthOfImage, heightOfImage);
+    CGSize pixelSizeToUseForTexture = pixelSizeOfImage;
 
     BOOL shouldRedrawUsingCoreGraphics = YES;
     
@@ -38,6 +51,7 @@
     if (!CGSizeEqualToSize(scaledImageSizeToFitOnGPU, pixelSizeOfImage))
     {
         pixelSizeOfImage = scaledImageSizeToFitOnGPU;
+        pixelSizeToUseForTexture = pixelSizeOfImage;
         shouldRedrawUsingCoreGraphics = YES;
     }
     
@@ -47,7 +61,7 @@
         CGFloat powerClosestToWidth = ceil(log2(pixelSizeOfImage.width));
         CGFloat powerClosestToHeight = ceil(log2(pixelSizeOfImage.height));
         
-        pixelSizeOfImage = CGSizeMake(pow(2.0, powerClosestToWidth), pow(2.0, powerClosestToHeight));
+        pixelSizeToUseForTexture = CGSizeMake(pow(2.0, powerClosestToWidth), pow(2.0, powerClosestToHeight));
         
         shouldRedrawUsingCoreGraphics = YES;
     }
@@ -60,19 +74,19 @@
     if (shouldRedrawUsingCoreGraphics)
     {
         // For resized image, redraw
-        imageData = (GLubyte *) calloc(1, (int)pixelSizeOfImage.width * (int)pixelSizeOfImage.height * 4);
+        imageData = (GLubyte *) calloc(1, (int)pixelSizeToUseForTexture.width * (int)pixelSizeToUseForTexture.height * 4);
         
         CGColorSpaceRef genericRGBColorspace = CGColorSpaceCreateDeviceRGB();    
-        CGContextRef imageContext = CGBitmapContextCreate(imageData, (int)pixelSizeOfImage.width, (int)pixelSizeOfImage.height, 8, (int)pixelSizeOfImage.width * 4, genericRGBColorspace,  kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+        CGContextRef imageContext = CGBitmapContextCreate(imageData, (int)pixelSizeToUseForTexture.width, (int)pixelSizeToUseForTexture.height, 8, (int)pixelSizeToUseForTexture.width * 4, genericRGBColorspace,  kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
 //        CGContextSetBlendMode(imageContext, kCGBlendModeCopy); // From Technical Q&A QA1708: http://developer.apple.com/library/ios/#qa/qa1708/_index.html
-        CGContextDrawImage(imageContext, CGRectMake(0.0, 0.0, pixelSizeOfImage.width, pixelSizeOfImage.height), [imageSource CGImage]);
+        CGContextDrawImage(imageContext, CGRectMake(0.0, 0.0, pixelSizeToUseForTexture.width, pixelSizeToUseForTexture.height), newImageSource);
         CGContextRelease(imageContext);
         CGColorSpaceRelease(genericRGBColorspace);
     }
     else
     {
         // Access the raw image bytes directly
-        dataFromImageDataProvider = CGDataProviderCopyData(CGImageGetDataProvider([imageSource CGImage]));
+        dataFromImageDataProvider = CGDataProviderCopyData(CGImageGetDataProvider(newImageSource));
         imageData = (GLubyte *)CFDataGetBytePtr(dataFromImageDataProvider);
     }    
     
@@ -84,7 +98,7 @@
     {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (int)pixelSizeOfImage.width, (int)pixelSizeOfImage.height, 0, GL_BGRA, GL_UNSIGNED_BYTE, imageData);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (int)pixelSizeToUseForTexture.width, (int)pixelSizeToUseForTexture.height, 0, GL_BGRA, GL_UNSIGNED_BYTE, imageData);
     
     if (self.shouldSmoothlyScaleOutput)
     {
@@ -108,7 +122,7 @@
 
 - (void)processImage;
 {
-    CGSize pixelSizeOfImage = [self outputImageSize];
+    hasProcessedImage = YES;
     
     for (id<GPUImageInput> currentTarget in targets)
     {
@@ -116,17 +130,24 @@
         NSInteger textureIndexOfTarget = [[targetTextureIndices objectAtIndex:indexOfObject] integerValue];
 
         [currentTarget setInputSize:pixelSizeOfImage atIndex:textureIndexOfTarget];
-        [currentTarget newFrameReadyAtTime:kCMTimeInvalid];
+        [currentTarget newFrameReadyAtTime:kCMTimeIndefinite atIndex:textureIndexOfTarget];
     }    
 }
 
 - (CGSize)outputImageSize;
 {
-    CGSize pointSizeOfImage = [imageSource size];
-    CGFloat scaleOfImage = [imageSource scale];
-    CGSize pixelSizeOfImage = CGSizeMake(scaleOfImage * pointSizeOfImage.width, scaleOfImage * pointSizeOfImage.height);
-    pixelSizeOfImage = [GPUImageOpenGLESContext sizeThatFitsWithinATextureForSize:pixelSizeOfImage];
     return pixelSizeOfImage;
+}
+
+- (void)addTarget:(id<GPUImageInput>)newTarget atTextureLocation:(NSInteger)textureLocation;
+{
+    [super addTarget:newTarget atTextureLocation:textureLocation];
+
+    if (hasProcessedImage)
+    {
+        [newTarget setInputSize:pixelSizeOfImage atIndex:textureLocation];
+        [newTarget newFrameReadyAtTime:kCMTimeIndefinite atIndex:textureLocation];
+    }
 }
 
 @end

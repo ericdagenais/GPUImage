@@ -143,11 +143,10 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
     filter.preventRendering = NO;
 }
 
-- (UIImage *)imageFromCurrentlyProcessedOutputWithOrientation:(UIImageOrientation)imageOrientation;
-{
+- (CGImageRef)newCGImageFromCurrentlyProcessedOutputWithOrientation:(UIImageOrientation)imageOrientation {
     [GPUImageOpenGLESContext useImageProcessingContext];
     [self setOutputFBO];
-
+    
     CGSize currentFBOSize = [self sizeOfFBO];
     NSUInteger totalBytesForImage = (int)currentFBOSize.width * (int)currentFBOSize.height * 4;
     // It appears that the width of a texture must be padded out to be a multiple of 8 (32 bytes) if reading from it using a texture cache
@@ -159,7 +158,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
     CGDataProviderRef dataProvider;
     if ([GPUImageOpenGLESContext supportsFastTextureUpload] && preparedToCaptureImage) 
     {
-//        glFlush();
+        //        glFlush();
         glFinish();
         CFRetain(renderTarget); // I need to retain the pixel buffer here and release in the data source callback to prevent its bytes from being prematurely deallocated during a photo write operation
         CVPixelBufferLockBaseAddress(renderTarget, 0);
@@ -176,7 +175,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
 	
     
     CGColorSpaceRef defaultRGBColorSpace = CGColorSpaceCreateDeviceRGB();
-
+    
     CGImageRef cgImageFromBytes;
     if ([GPUImageOpenGLESContext supportsFastTextureUpload] && preparedToCaptureImage) 
     {
@@ -188,27 +187,49 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
     }
     
     // Capture image with current device orientation
-    UIImage *finalImage = [UIImage imageWithCGImage:cgImageFromBytes scale:1.0 orientation:imageOrientation];
-
-    CGImageRelease(cgImageFromBytes);
     CGDataProviderRelease(dataProvider);
     CGColorSpaceRelease(defaultRGBColorSpace);
-    
+
+    return cgImageFromBytes;
+}
+
+- (UIImage *)imageFromCurrentlyProcessedOutputWithOrientation:(UIImageOrientation)imageOrientation;
+{
+    CGImageRef cgImageFromBytes = [self newCGImageFromCurrentlyProcessedOutputWithOrientation:imageOrientation];
+    UIImage *finalImage = [UIImage imageWithCGImage:cgImageFromBytes scale:1.0 orientation:imageOrientation];
+    CGImageRelease(cgImageFromBytes);
+
     return finalImage;
 }
 
-- (UIImage *)imageByFilteringImage:(UIImage *)imageToFilter;
+- (CGImageRef)newCGImageByFilteringCGImage:(CGImageRef)imageToFilter {
+    return [self newCGImageByFilteringCGImage:imageToFilter orientation:UIImageOrientationUp];
+}
+
+- (CGImageRef)newCGImageByFilteringCGImage:(CGImageRef)imageToFilter orientation:(UIImageOrientation)orientation;
 {
-    GPUImagePicture *stillImageSource = [[GPUImagePicture alloc] initWithImage:imageToFilter];
+    GPUImagePicture *stillImageSource = [[GPUImagePicture alloc] initWithCGImage:imageToFilter];
     
     [self prepareForImageCapture];
     
     [stillImageSource addTarget:self];
     [stillImageSource processImage];
     
-    UIImage *processedImage = [self imageFromCurrentlyProcessedOutput];
+    CGImageRef processedImage = [self newCGImageFromCurrentlyProcessedOutputWithOrientation:orientation];
     
     [stillImageSource removeTarget:self];
+    return processedImage;
+}
+
+- (CGImageRef)newCGImageByFilteringImage:(UIImage *)imageToFilter {
+    return [self newCGImageByFilteringCGImage:[imageToFilter CGImage] orientation:[imageToFilter imageOrientation]];
+}
+
+- (UIImage *)imageByFilteringImage:(UIImage *)imageToFilter;
+{
+    CGImageRef image = [self newCGImageByFilteringCGImage:[imageToFilter CGImage] orientation:[imageToFilter imageOrientation]];
+    UIImage *processedImage = [UIImage imageWithCGImage:image scale:[imageToFilter scale] orientation:[imageToFilter imageOrientation]];
+    CGImageRelease(image);
     return processedImage;
 }
 
@@ -233,13 +254,19 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
     glActiveTexture(GL_TEXTURE1);
     glGenFramebuffers(1, &filterFramebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, filterFramebuffer);
-
+    
     if ([GPUImageOpenGLESContext supportsFastTextureUpload] && preparedToCaptureImage)
     {
+        
+#if defined(__IPHONE_6_0)
+        CVReturn err = CVOpenGLESTextureCacheCreate(kCFAllocatorDefault, NULL, [[GPUImageOpenGLESContext sharedImageProcessingOpenGLESContext] context], NULL, &filterTextureCache);
+#else
         CVReturn err = CVOpenGLESTextureCacheCreate(kCFAllocatorDefault, NULL, (__bridge void *)[[GPUImageOpenGLESContext sharedImageProcessingOpenGLESContext] context], NULL, &filterTextureCache);
-        if (err) 
+#endif
+
+        if (err)
         {
-            NSAssert(NO, @"Error at CVOpenGLESTextureCacheCreate %d");
+            NSAssert(NO, @"Error at CVOpenGLESTextureCacheCreate %d", err);
         }
         
         // Code originally sourced from http://allmybrain.com/2011/12/08/rendering-to-a-texture-with-ios-5-texture-cache-api/
@@ -254,7 +281,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
         if (err) 
         {
             NSLog(@"FBO size: %f, %f", currentFBOSize.width, currentFBOSize.height);
-            NSAssert(NO, @"Error at CVPixelBufferCreate %d");
+            NSAssert(NO, @"Error at CVPixelBufferCreate %d", err);
         }
         
         err = CVOpenGLESTextureCacheCreateTextureFromImage (kCFAllocatorDefault,
@@ -270,7 +297,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
                                                       &renderTexture);
         if (err) 
         {
-            NSAssert(NO, @"Error at CVOpenGLESTextureCacheCreateTextureFromImage %d");
+            NSAssert(NO, @"Error at CVOpenGLESTextureCacheCreateTextureFromImage %d", err);
         }
 
         CFRelease(attrs);
@@ -281,12 +308,16 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, CVOpenGLESTextureGetName(renderTexture), 0);
+        
+        [self notifyTargetsAboutNewOutputTexture];
     }
     else
     {                
         glBindTexture(GL_TEXTURE_2D, outputTexture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (int)currentFBOSize.width, (int)currentFBOSize.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outputTexture, 0);
+        
+        [self notifyTargetsAboutNewOutputTexture];
     }
     
 //    NSLog(@"Filter size: %f, %f for filter: %@", currentFBOSize.width, currentFBOSize.height, self);
@@ -391,6 +422,13 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
         1.0f, 0.0f,
         1.0f, 1.0f,
     };
+    
+    static const GLfloat rotate180TextureCoordinates[] = {
+        1.0f, 1.0f,
+        0.0f, 1.0f,
+        1.0f, 0.0f,
+        0.0f, 0.0f,
+    };
 
     switch(rotationMode)
     {
@@ -400,6 +438,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
         case kGPUImageFlipVertical: return verticalFlipTextureCoordinates;
         case kGPUImageFlipHorizonal: return horizontalFlipTextureCoordinates;
         case kGPUImageRotateRightFlipVertical: return rotateRightVerticalFlipTextureCoordinates;
+        case kGPUImageRotate180: return rotate180TextureCoordinates;
     }
 }
 
@@ -433,7 +472,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
 {
     if (self.frameProcessingCompletionBlock != NULL)
     {
-        self.frameProcessingCompletionBlock(self);
+        self.frameProcessingCompletionBlock(self, frameTime);
     }
     
     for (id<GPUImageInput> currentTarget in targets)
@@ -449,7 +488,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
             }
             
             [currentTarget setInputSize:[self outputFrameSize] atIndex:textureIndex];
-            [currentTarget newFrameReadyAtTime:frameTime];
+            [currentTarget newFrameReadyAtTime:frameTime atIndex:textureIndex];
         }
     }
 }
@@ -555,7 +594,7 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
 #pragma mark -
 #pragma mark GPUImageInput
 
-- (void)newFrameReadyAtTime:(CMTime)frameTime;
+- (void)newFrameReadyAtTime:(CMTime)frameTime atIndex:(NSInteger)textureIndex;
 {
     static const GLfloat imageVertices[] = {
         -1.0f, -1.0f,
@@ -637,6 +676,11 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
             rotatedPoint.x = pointToRotate.y;
             rotatedPoint.y = pointToRotate.x;
         }; break;
+        case kGPUImageRotate180:
+        {
+            rotatedPoint.x = 1.0 - pointToRotate.x;
+            rotatedPoint.y = 1.0 - pointToRotate.y;
+        }; break;
     }
     
     return rotatedPoint;
@@ -700,6 +744,8 @@ void dataProviderUnlockCallback (void *info, const void *data, size_t size)
     if (CGSizeEqualToSize(frameSize, CGSizeZero))
     {
         overrideInputSize = NO;
+        inputTextureSize = CGSizeZero;
+        forcedMaximumSize = CGSizeZero;
     }
     else
     {
