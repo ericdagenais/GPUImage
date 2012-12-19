@@ -26,3 +26,4 @@ framework/build-iPhoneOS/libGPUImage.a
 framework/build-iPhoneSimulator/libGPUImage.a
 framework/build/libGPUImage.a
 framework/framework.bridgesupport
+framework/.build
